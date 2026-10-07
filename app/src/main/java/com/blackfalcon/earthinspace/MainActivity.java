@@ -1,10 +1,15 @@
 package com.blackfalcon.earthinspace;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -20,7 +25,7 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.TimeZone;
 
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements SensorEventListener {
 
     private static final int GREEN = 0xFF2ECC71, GOLD = 0xFFFFC107, GRAY = 0xFFA0A0C0, CARD = 0xFF0C0C1E, EDGE = 0xFF3A3A60;
     private static final long DAY = 86400000L;
@@ -33,11 +38,17 @@ public class MainActivity extends Activity {
 
     private SpaceView space;
     private SeekBar zoomSeek, dateSeek;
-    private TextView zoomTv, dateTv, infoTitle, infoBody;
+    private TextView zoomTv, dateTv, infoTitle, infoBody, compassBtn;
     private LinearLayout dateBox;
     private ScrollView mainScroll, addressScroll;
     private final TextView[] tabs = new TextView[4];
     private boolean seekFromCode = false;
+
+    // Compass Sensor Variables
+    private SensorManager sensorManager;
+    private Sensor rotationSensor;
+    private boolean isCompassEnabled = false;
+    private final float[] rotMat = new float[9], orient = new float[3];
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
@@ -53,12 +64,34 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // Sensor initialization
+        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        if (sensorManager != null) {
+            rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        }
+
         buildUi();
         setMode(SpaceView.SOLAR);
     }
 
-    @Override protected void onResume() { super.onResume(); handler.post(tick); }
-    @Override protected void onPause() { super.onPause(); handler.removeCallbacks(tick); }
+    @Override
+    protected void onResume() {
+        super.onResume();
+        handler.post(tick);
+        if (isCompassEnabled && rotationSensor != null) {
+            sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        handler.removeCallbacks(tick);
+        if (sensorManager != null) {
+            sensorManager.unregisterListener(this);
+        }
+    }
 
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 
@@ -109,21 +142,35 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(0xFF02030A);
 
-        // header
+        // Header with Title & Compass Button
         LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.VERTICAL);
+        head.setOrientation(LinearLayout.HORIZONTAL);
         head.setPadding(dp(16), dp(12), dp(16), dp(4));
+        head.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout titleBox = new LinearLayout(this);
+        titleBox.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+
         TextView title = tv(22, Color.WHITE, true);
-        title.setText("\uD83C\uDF0D Earth in Space");
+        title.setText("🌍 Earth in Space");
         TextView sub = tv(13, GRAY, false);
         sub.setText("Where is Earth right now? Zoom out step by step.");
-        head.addView(title);
-        head.addView(sub);
+        titleBox.addView(title);
+        titleBox.addView(sub);
+
+        // Compass ON/OFF Button
+        compassBtn = pill("🧭 Compass OFF", GRAY);
+        compassBtn.setPadding(dp(8), dp(6), dp(8), dp(6));
+        compassBtn.setOnClickListener(v -> toggleCompass());
+
+        head.addView(titleBox, titleLp);
+        head.addView(compassBtn);
 
         // tabs
         LinearLayout tabRow = new LinearLayout(this);
         tabRow.setPadding(dp(10), dp(6), dp(10), dp(6));
-        String[] names = {"\u2600\uFE0F Solar", "\u2B50 Stars", "\uD83C\uDF0C Galaxy", "\uD83D\uDD2D Address"};
+        String[] names = {"☀️ Solar", "⭐ Stars", "🌌 Galaxy", "🔭 Address"};
         for (int i = 0; i < 4; i++) {
             final int idx = i;
             tabs[i] = pill(names[i], GREEN);
@@ -182,7 +229,7 @@ public class MainActivity extends Activity {
             @Override public void onStopTrackingTouch(SeekBar sb) { }
         });
         LinearLayout btnRow = new LinearLayout(this);
-        String[] bl = {"\u221230 d", "\u22121 d", "Now", "+1 d", "+30 d"};
+        String[] bl = {"−30 d", "−1 d", "Now", "+1 d", "+30 d"};
         final long[] delta = {-30 * DAY, -DAY, 0, DAY, 30 * DAY};
         for (int i = 0; i < 5; i++) {
             final int idx = i;
@@ -219,7 +266,7 @@ public class MainActivity extends Activity {
         addressScroll.setVisibility(View.GONE);
 
         TextView credit = tv(13, Color.WHITE, true);
-        credit.setText("By: Black Falcon \uD83E\uDD85");
+        credit.setText("By: Black Falcon 🦅");
         credit.setGravity(Gravity.RIGHT);
         credit.setPadding(dp(16), dp(4), dp(16), dp(8));
 
@@ -231,13 +278,46 @@ public class MainActivity extends Activity {
         setContentView(root);
     }
 
+    private void toggleCompass() {
+        isCompassEnabled = !isCompassEnabled;
+        if (isCompassEnabled) {
+            compassBtn.setText("🧭 Compass ON");
+            compassBtn.setTextColor(GOLD);
+            compassBtn.setBackground(round(0xFF101028, GOLD, 20));
+            if (rotationSensor != null) {
+                sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+            }
+        } else {
+            compassBtn.setText("🧭 Compass OFF");
+            compassBtn.setTextColor(GRAY);
+            compassBtn.setBackground(round(0xFF101028, GRAY, 20));
+            if (sensorManager != null) {
+                sensorManager.unregisterListener(this);
+            }
+            space.setRotation(0f); // Compass off karne par view reset
+        }
+    }
+
+    @Override
+    public void onSensorChanged(SensorEvent event) {
+        if (!isCompassEnabled || event.sensor.getType() != Sensor.TYPE_ROTATION_VECTOR) return;
+        SensorManager.getRotationMatrixFromVector(rotMat, event.values);
+        SensorManager.getOrientation(rotMat, orient);
+        float azimuth = (float) Math.toDegrees(orient[0]);
+        if (azimuth < 0) azimuth += 360f;
+        space.setRotation(-azimuth); // View ko phone ke azimuth ke sath rotate karein
+    }
+
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+
     private View buildAddress() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(12), dp(6), dp(12), dp(12));
 
         TextView h = tv(18, Color.WHITE, true);
-        h.setText("\uD83D\uDD2D Earth's cosmic address");
+        h.setText("🔭 Earth's cosmic address");
         TextView sub = tv(13, GRAY, false);
         sub.setText("Each step is bigger than the one before. The bar shows the size on a log scale.");
         sub.setPadding(0, dp(2), 0, dp(6));
@@ -246,14 +326,14 @@ public class MainActivity extends Activity {
 
         LinearLayout speeds = card(GREEN);
         TextView st = tv(16, GREEN, true);
-        st.setText("\uD83D\uDE80 You are moving, all at once:");
+        st.setText("🚀 You are moving, all at once:");
         TextView sb = tv(14, Color.WHITE, false);
         sb.setLineSpacing(0, 1.15f);
         sb.setPadding(0, dp(6), 0, 0);
-        sb.setText("\u2022 about 0.46 km/s \u2014 Earth spinning (1,670 km/h at the equator)\n"
-                + "\u2022 about 29.8 km/s \u2014 Earth going round the Sun (107,000 km/h)\n"
-                + "\u2022 about 230 km/s \u2014 the Sun going round the Milky Way (about 830,000 km/h)\n"
-                + "\u2022 about 370 km/s \u2014 the Solar System relative to the glow left by the Big Bang (about 1.3 million km/h), towards galactic longitude 264\u00B0, latitude +48\u00B0\n\n"
+        sb.setText("• about 0.46 km/s — Earth spinning (1,670 km/h at the equator)\n"
+                + "• about 29.8 km/s — Earth going round the Sun (107,000 km/h)\n"
+                + "• about 230 km/s — the Sun going round the Milky Way (about 830,000 km/h)\n"
+                + "• about 370 km/s — the Solar System relative to the glow left by the Big Bang (about 1.3 million km/h), towards galactic longitude 264°, latitude +48°\n\n"
                 + "These do not simply add up: they point in different directions and are measured against different things.");
         speeds.addView(st);
         speeds.addView(sb);
@@ -289,7 +369,7 @@ public class MainActivity extends Activity {
             c.addView(bar, bl);
             if (i == 0) {
                 TextView you = tv(12, GREEN, true);
-                you.setText("\uD83D\uDCCD You are here");
+                you.setText("📍 You are here");
                 c.addView(you, lp(6));
             }
             box.addView(c, lp(8));
@@ -331,11 +411,11 @@ public class MainActivity extends Activity {
     private void updateZoomLabel() {
         float z = zoomSeek.getProgress() / 100f;
         if (mode == SpaceView.SOLAR) {
-            zoomTv.setText(String.format(Locale.US, "Zoom \u2014 showing out to %.1f AU (1 AU = Earth\u2013Sun distance)", SpaceView.solarRmax(z)));
+            zoomTv.setText(String.format(Locale.US, "Zoom — showing out to %.1f AU (1 AU = Earth–Sun distance)", SpaceView.solarRmax(z)));
         } else if (mode == SpaceView.STARS) {
-            zoomTv.setText(String.format(Locale.US, "Zoom \u2014 showing stars within %,.0f light-years", SpaceView.starsDmax(z)));
+            zoomTv.setText(String.format(Locale.US, "Zoom — showing stars within %,.0f light-years", SpaceView.starsDmax(z)));
         } else {
-            zoomTv.setText(String.format(Locale.US, "Zoom \u2014 \u00D7%.1f (slide right to fly in to the Sun's neighbourhood)", SpaceView.galaxyScale(z)));
+            zoomTv.setText(String.format(Locale.US, "Zoom — ×%.1f (slide right to fly in to the Sun's neighbourhood)", SpaceView.galaxyScale(z)));
         }
     }
 
@@ -393,8 +473,8 @@ public class MainActivity extends Activity {
         seekFromCode = true;
         dateSeek.setProgress((int) Math.max(0, Math.min(730, Math.round(offsetMs / (double) DAY) + 365)));
         seekFromCode = false;
-        dateTv.setText((live ? "Now \u2022 " : "Date \u2022 ") + utc(ms, "d MMM yyyy, HH:mm") + " UTC"
-                + (live ? "" : "  (" + (offsetMs > 0 ? "+" : "\u2212") + Math.abs(Math.round(offsetMs / (double) DAY)) + " days)"));
+        dateTv.setText((live ? "Now • " : "Date • ") + utc(ms, "d MMM yyyy, HH:mm") + " UTC"
+                + (live ? "" : "  (" + (offsetMs > 0 ? "+" : "−") + Math.abs(Math.round(offsetMs / (double) DAY)) + " days)"));
 
         int sel = space.getSelected();
         double[] earth = Orbits.helio(2, jd);
@@ -402,7 +482,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
 
         if (sel == SpaceView.SUN) {
-            infoTitle.setText("\u2600\uFE0F The Sun \u2014 our star");
+            infoTitle.setText("☀️ The Sun — our star");
             sb.append(String.format(Locale.US, "Distance from Earth: %.4f AU (%.2f million km)\n", rE, rE * Orbits.AU_KM / 1e6));
             sb.append(String.format(Locale.US, "Its light takes %s to reach Earth.\n", mmss(rE * 499.0048)));
             sb.append("Width: about 1.39 million km (109 Earths in a row).\n");
@@ -411,7 +491,7 @@ public class MainActivity extends Activity {
         } else if (sel >= 0 && sel < 8 && sel != 2) {
             double[] p = Orbits.helio(sel, jd);
             double r = Orbits.norm(p), d = Orbits.dist(p, earth);
-            infoTitle.setText("\uD83E\uDE90 " + Orbits.NAMES[sel]);
+            infoTitle.setText("🪐 " + Orbits.NAMES[sel]);
             sb.append(String.format(Locale.US, "Distance from the Sun: %.2f AU (%,.0f million km)\n", r, r * Orbits.AU_KM / 1e6));
             sb.append(String.format(Locale.US, "Distance from Earth right now: %.2f AU (%,.0f million km)\n", d, d * Orbits.AU_KM / 1e6));
             sb.append(String.format(Locale.US, "Its light takes %s to reach Earth.\n", mmss(d * 499.0048)));
@@ -419,7 +499,7 @@ public class MainActivity extends Activity {
             sb.append(years < 1 ? String.format(Locale.US, "One year there: %.0f Earth days.", years * 365.25)
                     : String.format(Locale.US, "One year there: %.1f Earth years.", years));
         } else {
-            infoTitle.setText(live ? "\uD83D\uDCCD Earth \u2014 right now" : "\uD83D\uDCCD Earth on " + utc(ms, "d MMM yyyy"));
+            infoTitle.setText(live ? "📍 Earth — right now" : "📍 Earth on " + utc(ms, "d MMM yyyy"));
             double speed = Orbits.earthSpeedKmS(jd);
             double start = Orbits.yearStartJd(jd);
             double travelledKm = Orbits.pathAu(start, jd) * Orbits.AU_KM;
@@ -431,12 +511,12 @@ public class MainActivity extends Activity {
             sb.append(String.format(Locale.US, "Distance from the Sun: %.4f AU (%.2f million km)\n", rE, rE * Orbits.AU_KM / 1e6));
             sb.append(String.format(Locale.US, "Speed round the Sun: %.2f km/s (%,.0f km/h)\n", speed, speed * 3600));
             sb.append("Sunlight needs ").append(mmss(rE * 499.0048)).append(" to get here.\n");
-            sb.append(String.format(Locale.US, "Angle round the Sun: %.0f\u00B0 from the March-equinox direction.\n", lon));
+            sb.append(String.format(Locale.US, "Angle round the Sun: %.0f° from the March-equinox direction.\n", lon));
             sb.append(String.format(Locale.US, "Travelled along its orbit since 1 Jan: about %,.0f km", Math.round(travelledKm / 100.0) * 100.0));
             sb.append(live ? " (and growing by about 30 km every second).\n" : ".\n");
             sb.append("Next: ").append(QUARTER[idx[0]]).append(" on ").append(utc(Orbits.millis(nq), "d MMM yyyy, HH:mm"))
                     .append(" UTC (in ").append(Math.max(0, Math.round(nq - jd))).append(" days).\n");
-            sb.append(String.format(Locale.US, "Closest to the Sun (P): about %s \u2022 farthest (A): about %s.\n",
+            sb.append(String.format(Locale.US, "Closest to the Sun (P): about %s • farthest (A): about %s.\n",
                     utc(Orbits.millis(ex[0]), "d MMM"), utc(Orbits.millis(ex[1]), "d MMM")));
             sb.append("Times are accurate to about 15 minutes. Tap a planet to learn about it.");
         }
@@ -452,7 +532,7 @@ public class MainActivity extends Activity {
     private void starsInfo() {
         int sel = space.getSelected();
         if (sel < 0 || sel >= Cosmos.STARS.length) {
-            infoTitle.setText("\u2B50 Stars near Earth");
+            infoTitle.setText("⭐ Stars near Earth");
             infoBody.setText("This is the flat disk of the Milky Way seen from above, with the Sun in the middle. "
                     + "Up points to the centre of the galaxy; left is the way the Sun is travelling.\n\n"
                     + "The nearest star system is Alpha Centauri, only 4.37 light-years away. "
@@ -460,22 +540,22 @@ public class MainActivity extends Activity {
             return;
         }
         Cosmos.Star s = Cosmos.STARS[sel];
-        infoTitle.setText("\u2B50 " + s.name);
+        infoTitle.setText("⭐ " + s.name);
         String dist = s.ly < 100 ? String.format(Locale.US, "%.1f", s.ly) : String.format(Locale.US, "%,.0f", s.ly);
         infoBody.setText("Distance: " + dist + " light-years (about " + String.format(Locale.US, "%,.0f", s.ly * 9.4607) + " trillion km).\n"
                 + "The light you see left it about " + dist + " years ago, so you see the star as it was then.\n"
-                + String.format(Locale.US, "Direction in our galaxy: galactic longitude %.0f\u00B0, latitude %+.0f\u00B0.\n", s.l, s.b)
+                + String.format(Locale.US, "Direction in our galaxy: galactic longitude %.0f°, latitude %+.0f°.\n", s.l, s.b)
                 + "Distances here are approximate (they differ a little between catalogues).");
     }
 
     private void galaxyInfo() {
-        infoTitle.setText("\uD83C\uDF0C Earth in the Milky Way");
+        infoTitle.setText("🌌 Earth in the Milky Way");
         infoBody.setText("Place: the Orion Spur, a small arm piece between the Sagittarius and Perseus arms.\n"
                 + "Distance from the Galactic centre (the black hole Sgr A*): about 26,700 light-years.\n"
                 + "Height above the middle of the disk: only about 65 light-years.\n"
                 + "The Sun goes round the galaxy at about 230 km/s, one lap takes about 230 million years, "
                 + "so the Sun has made around 20 laps. The last time the Solar System was at this spot, the first dinosaurs were appearing.\n"
-                + "We move towards galactic longitude 90\u00B0, in the direction of the constellation Cygnus.\n\n"
+                + "We move towards galactic longitude 90°, in the direction of the constellation Cygnus.\n\n"
                 + "The arms are a schematic drawing, not an exact map. Sources: Reid et al. 2019; GRAVITY 2019; Bland-Hawthorn & Gerhard 2016.");
     }
 }
